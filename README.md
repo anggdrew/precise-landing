@@ -11,6 +11,8 @@ If using the ANAFI Ai, use `olympe-keyboard-ai.py` instead, which calls the more
 
 Specifics regarding the changes to each file can be found in the `script-changes.txt` file in `replaced-files` folder.
 
+If there are issues with building the images for flashing firmware, update some of the files with those in `firmware-updates`.
+
 Autonomous landing
 ==================
 
