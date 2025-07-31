@@ -1,0 +1,207 @@
+###########
+config.py
+
+This file contains important information pertaining to your setup’s real world layout and will be used extensively in the localisation process. As such, it is important to ensure that the variables in this file correctly represent your actual setup. As said in the Precise-Landing repository instructions, once the Ranging test is done, you should know the hexadecimal codes that represent the memory address for each Anchor module and the Tag module. In config.py you will then need to amend these modules’ codes respectively. 
+
+In the Anchors section is also a 4X3 array of the positions of the Anchors relative to each other. Depending on your real world setup, you will need to edit these values with the X-axis as the leftmost value, Y-axis as the middle value and Z-axis as the rightmost value. For example, if your Anchors are set up flat on the ground in a square of side length 1.3m, the Anchor array in config.py should look like 
+
+ANCHORS = {
+    # Network 0xdeca, tag 0x51b3
+    0xd59b: [0.000, 0.000, 0.000], #Master Anchor at Origin
+    0x4936: [1.300, 0.000, 0.000], #Slave 3
+    0x852c: [1.300, 1.300, 0.000], #Slave 2
+    0xda9f: [0.000, 1.300, 0.000], #Slave 1
+ }
+
+with the values in meters. Ensure that the hexadecimal codes correspond to the correct Anchor module and that the real world setup is reflected correctly in the coordinate system.
+
+For ease of editing, I defined my own variable LENGTH, which is the length of the Anchor square and calculated the diagonal of the square as SQUARE_DIAGONAL = ((LENGTH**2) + (LENGTH**2))**0.5 for use later in location.py. Note that this will only work if the layout is a square. For non-square layouts, this will need to be changed accordingly.
+
+Lastly, there is the LANDING_ANGLE variable which by default is set to 0. This variable represents the difference in zeroing between the drone’s yaw and the Anchor’s coordinate grid. By default, Anchor coordinates have their origin at the Master Anchor and Y axis increases positively towards Slave 1 while X axis increases positively towards Slave 3. If you set the Anchors up in the repository’s recommended East-North Up manner, +Y is North and +X is East. The Anafi Ai drone will calibrate upon powering on and will zero its yaw according to whatever direction it is facing upon powering on and completing its startup process and will not recalibrate unless power cycled or until it gets a GPS fix. For example, let the Anchors be set up such that its coordinates are in East-North Up and the drone is powered facing 30o clockwise from North. This means that there is an offset between the drone’s coordinate system and the anchor’s coordinate system of positive 30o. To account for this, you must change the value of LANDING_ANGLE to equal 30o. Since LANDING_ANGLE takes its value in radian, LANDING_ANGLE = 0.524 (0.524 rad ≈ 30o). 
+
+Once the Anafi Ai gets a GPS fix, the yaw will recalibrate to 0 when facing North. As such, in the example above, if the Anafi Ai is flying outdoors where it can get a GPS fix, LANDING_ANGLE can remain as zero. However if the the Anchor coordinates are offset 200o clockwise of North, converting the angle within the range of -π ≤ 𝛳 ≤ π, LANDING_ANGLE must be set to -2.79 (360o - 200o = 160o, -160o ≈ -2.79 rad). For more understanding of why this is the case, see section How the drone navigation and control works further below.
+
+###########
+file_to_sock.py
+
+	The default file_to_sock.py file in the repository contains certain struct formats that are outdated or not large enough. The function definition of send_dwm_data(), change the struct format from 
+
+fmt = "iiihhfi"		to	   fmt = "iiiiifi"	
+
+and in the same function, within the For loop for anchor in loc['anchors']:, change the format from 
+
+fmt = "iiihhihh"		to	    fmt = "iiiiiiii"
+
+“h” in a struct represents a short datatype taking up 2 bytes whereas “i” represents a int datatype taking up 4 bytes. The “h” present in these formats causes an integer overflow error when reading certain values. Changing them to ints will correct this problem.
+
+###########
+location.py
+
+Similarly to the integer overflow issue in file_to_sock.py, in the function receive_dwm_location_from_sock(), the struct format should also be changed from 
+
+fmt = "iiihhfi"		to	    fmt = "iiiiifi"
+
+Another issue arises with the function receive_parrot_data_from_sock() in the header section of the function where the socket takes telemetry data from the drone and logs the time that events occur. The struct format is defined to use a float for the timestamp, called via the time.time()function that is zeroed to 0000hrs 1 January 1970. Due to the length of time that has since passed, the floating point’s normal 7 decimal precision exhibits inadequate precision for this, causing the time stamps for repeated instructions sent by the location script to remain as the same float value and makes it difficult for the Olympe keyboard script to parse. This results in situations where the drone is issued a takeoff instruction, Olympe event listener changes the state to ‘Takeoff’, then due to the timestamp all being identical, causes a bug where the event listener then quickly changes the state back to ‘Landed’and the drone is never allowed to actually take off. 
+Fixing this just requires us to change the datatype for sending and storing timestamps as a double instead of a float to increase the decimal precision. In the #Header section of receive_parrot_data_from_sock(), change the struct format from  
+
+fmt = "if"		to	    fmt = "id"
+
+location.py is central to the localisation process for the drone. There are certain settings here that can be changed in order to make the process smoother, safer and faster. 
+
+Firstly, limiting the speed and acceleration of the drone when it is being controlled autonomously can help to make it safer when performing landings and allow for a faster window of time to respond in the event of unpredicted or erratic behaviour by the drone. Quadcopter drones control their speed and motion via their throttle value as well as the extent of their roll and pitch angle. Pitching/rolling more with higher throttle will cause it to accelerate faster in a given direction. Controlling the top speed and acceleration of the drone is thus through controlling the maximum pitch, roll and throttle of the drone.
+
+Under the method definition of _send_command() in class drone_navigator(), the roll, pitch and yaw values, a class of values known as attitudes, are taken in as parameters and sent to the Olympe keyboard script to control the drone. The values are processed by the numpy clip function to limit it to within the range of [-100,100], which is the range of what the Parrot API will accept, and any intermediate values within range are linearly extrapolated. This means that if the maximum roll angle of the drone is 10o, a value of roll = 70 will cause a roll of 7o in the positive orientation. Decreasing this range will limit the maximum attitude angle, which reduces the lateral velocity components generated by the propellers, lowering the lateral forces that move the drone and thus lowers its max acceleration. A similar concept applies to the throttle, lowering the maximum throttle experienced will reduce the force generated by the propellers too. 
+
+To do so, declare two variables max_att and max_thr and assign them a value between 0 and 100. Then clip the attitude variables by -max_att and max_att and the throttle by -max_thr and max_thr as shown below. 
+
+def _send_command(self, roll, pitch, yaw, thr):
+	max_att = 50
+	max_thr = 50
+
+	# Parrot accepts in signed percentage, i.e. [-100, 100] range
+
+	roll  = np.clip(int(roll), -max_att,  max_att)
+	pitch = np.clip(int(pitch), -max_att,  max_att)
+	yaw   = np.clip(int(yaw), -max_att,  max_att)
+	thr   = int(thr)
+
+	# Threshold is a bit special, where -128 and 127 are 'land' and 'takeoff'
+
+	if thr != -128 and thr != 127:
+    		thr = np.clip(int(thr), -max_thr, max_thr)
+	
+Technically, yaw does not affect the speed of the drone’s lateral movement. Clipping the yaw values will just cause it to turn slower. The throttle is also responsible for drone elevation. Clipping the throttle will cause it to ascend/descend slower as well. Note that clipping these values only limits the net force applied to the drone for flight control, and is not a hard limit for velocity of the drone. If the drone were to pitch/roll in one direction for an extended period of time, it will still continue to accelerate in that direction and continue to gain speed. 
+
+The landing error variables are values that are key to the system determining when it is acceptable to land. These variables are applied in the land_drone() method under class drone_navigator() and changing the values can significantly affect the landing process. The drone’s landing process depends on whether three conditions are met, namely that its XY position and Yaw are ready, and its Altitude delta is below the Altitude landing error. The error variables that control these ready checks are XY_LANDING_ERROR(), YAW_LANDING_ERROR and ALT_LANDING_ERROR respectively. These values are defined at the start of this file, outside the drone navigator class. Changing these values can help to make the drone land faster and more decisively, but note that it will sacrifice some accuracy in the landing. 
+
+The XY_LANDING_ERROR() gives the drone an allowed uncertainty when it iteratively lands, scaling based on its altitude. When the measured error is lower than the allowed error, xy_ready will switch to True. The function can be changed as such
+
+def XY_LANDING_ERROR(alt):
+    err = 0.3*alt - 0.2
+    return np.clip(err, {?}, 3)
+
+where the {?} can be substituted with a value in meters for the acceptable landing uncertainty. The default is 0.1 which makes the error value the minimum at altitude of 1m and below. Giving it larger values allows for a faster landing as the XY landing error can cause the landing process at <1m altitudes to take a long time due to the drone constantly adjusting position, but too large values can compromise accuracy and lead to erratic drone behaviour. 
+
+The YAW_LANDING_ERROR determines what the acceptable deviation of the drone's yaw can be from the target. When the measured error is lower than the allowed error, yaw_ready will switch to True. The value is default to 0.01 radians (≈ 0.57o). Raising this value can allow for the error range to be larger and make the landing process faster. Alternatively, it is possible to delete yaw_ready from the if statement as such 
+
+elif xy_ready and yaw_ready:
+
+which will allow the drone to land quite accurately even if the yaw is not fully correct. Take note that the yaw is required for the drone to understand its own local coordinates and how to move laterally, but the yaw should adjust to within an acceptable range so that getting rid of this condition should not affect the landing significantly or cause unexpected behaviour.
+
+Lastly the ALT_LANDING_ERROR determines the maximum difference between two altitude steps before the drone initialises a full landing. The code snippet that does this is
+
+elif now - self.ready_to_land_ts >= LANDING_SETTLING_SECS:
+  if altitude <= LANDING_ALT:
+    if self.prev_altitude is not None:
+      if np.abs(self.prev_altitude - altitude) < ALT_LANDING_ERROR:
+   control_thr = -128
+    self.prev_altitude = altitude
+
+Making ALT_LANDING_ERROR larger will allow for the if statement that triggers the final landing through control_thr = -128 to occur with more allowance, making the landing more decisive. 
+
+New functions is_dwm_reasonable() and remove_unreasonable_anchors() were also added in location.py to account for erroneous Anchor ranging data, for example when three Anchors report a distance of 1m and one Anchor reports a distance of 5m, which would be unreasonable. The threshold of reason is determined by an additional variable MAX_ANCHOR_DEVIATION declared at the file start. Assuming the Anchors are laid out in a square, the diagonal of the square, which is the furthest distance between two Anchors, is used to define MAX_ANCHOR_DEVIATION = cfg.SQUARE_DIAGONAL + 0.3, as 0.3m is the largest typical error of the UWB ranging. The square diagonal used as it is the largest theoretical difference between two Anchor readings from any arbitrary point.
+
+is_dwm_reasonable()checks if each Anchor’s ranging data is too large compared to the median distance reading from all available Anchor data points, returning False if any are too large and True if none are. Median is the chosen measure as it is less sensitive to extreme outliers in either end of the spectrum and due to the known distances between Anchors along with the implementation of MAX_ANCHOR_DEVIATION, reasonable distance data should always be within the MAX_ANCHOR_DEVIATION of the median. The function is defined as such:
+
+def is_dwm_location_reasonable(loc):
+
+	#check for anchors with very different distances
+	anchors = loc['anchors']
+	distances = [a['dist']['dist'] for a in anchors if 'dist' in a['dist']]
+
+	median_dist = np.median([d for d in distances])
+
+	for a in anchors:  
+		dist_diff = np.abs(a['dist']['dist'] - median_dist)    
+		if dist_diff > MAX_ANCHOR_DEVIATION:
+			return False
+	return True
+
+If the Anchor data is unreasonable, we can attempt to clean the data by either removing or replacing the overly large data. Removing data can work if there are still at least three remaining Anchors with reasonable data as the multilateration process needs at least three Anchors to find a solution for its 2D XY plane position. Replacing data is also possible as long as at least three Anchors provide reasonable data. 
+
+However, one issue is what to replace the unreasonable Anchor’s data with. Replacing with the median distance may not be the best solution as sometimes that Anchor is supposed to be the closest to or furthest away from the Tag and replacing it with the median corrupts the distance data and results in an unsolvable situation. One alternative would be to replace it with the last known reasonable distance, but this too has its flaws in allowing errors to compound, such as where multiple subsequent polls for a specific Anchor’s data continues to be unreasonable and as the drone continues to drift away, the difference between the last known reasonable position and true position starts to increase as well.
+
+I decided to go with the simpler solution of removing data where possible. The function is defined as:
+
+def remove_unreasonable_anchors(loc):
+	anchors = loc['anchors']
+	if len(anchors) < 3:
+		print("Warning: Not enough anchors to allow for removal")
+		return loc
+
+	distances = [a['dist']['dist'] for a in anchors if 'dist' in a['dist']]
+	if len(distances) != len(anchors):
+		print("Warning: Some anchors missing position data, skipping filter.")
+		return loc
+
+	median_dist = np.median([d for d in distances])
+
+	reasonable = []
+	for a in anchors: 
+		dist_diff = np.abs(a['dist']['dist'] - median_dist)
+		if dist_diff <= MAX_ANCHOR_DEVIATION:
+			reasonable.append(a)
+		else:
+			print(f"Removing anchor {a['addr']} (deviation {dist_diff:.2f}m)")
+
+	#if number of anchors providing reasonable readings < 3, too bad
+	if len(reasonable) < 3:
+		print("Warning: Not enough reasonable anchors")
+		return loc
+
+	new_loc = dict(loc)
+	new_loc['anchors'] = reasonable
+		return new_loc
+
+and to implement it into the program, under the definition of the get_dwm_location_or_parrot_data() function, edit the code to look like:
+
+if is_dwm_location_reliable(loc):
+    received = True
+    if is_dwm_location_reasonable(loc):
+        dwm_locs[dwm_fd] = loc
+    else:
+        dwm_locs[dwm_fd] = remove_unreasonable_anchors(loc)
+
+There are still certain flaws with this way of dealing with outlier Anchor data, mainly in not being able to definitively tell what is considered as an outlier compared to what is true. As there is no other external source which can be relied upon to authenticate the true distances between Tag and Anchor, this method can only identify outlier data by comparing it to all the other reported distances by the other Anchors. If there were to be a situation where there are more malfunctioning Anchors than properly working Anchors, the median distance calculated will be skewed towards the wrong Anchors and this check will fall apart. Hence when using this method, it is recommended to have as many Anchors as possible to reduce the effect of multiple Anchor failures.
+
+###########
+olympe-keyboard.py
+
+If you are using an Anafi Ai drone instead of the standard Anafi drone, such as what I did, under the if __name__=="__main__" function, you will need to change the drone object assignment from
+
+drone = olympe.Drone("192.168.53.1")
+to
+drone = olympe.AnafiAi("192.168.53.1")
+
+Sometimes, the drone’s camera or other media functionalities may fail to initialise. While the camera is not needed for this experiment, a failed camera startup can block the whole script from properly initialising and running. If this happens, you can add on to the drone assignment as follows
+
+drone = olympe.AnafiAi("192.168.53.1", media_autoconnect = False)
+
+Similarly, if you use other variants of Anafi drones, then you must assign drone to the relevant drone class, such as olympe.Anafi, olympe.AnafiUSA or alternatively use the generic olympe.Drone class, which is more general but has less functionalities compared to if you specified based on the exact drone model being used.
+
+Also under the same main function, it is a good practice to add a wait and success method to all the drone commands to ensure that the actions are performed and not skipped upon timeout. The following are examples of what to add to.
+
+drone(drone_cmd_takeoff()).wait().success()
+drone(drone_cmd_land()).wait().success()
+drone_start_recording(drone).wait().success()
+drone_stop_recording(drone).wait().success()
+drone(kb_ctrl.get_piloting_cmd()).wait().success()
+drone(cmd).wait().success()
+
+Additionally, you can add a timeout duration in the wait method as such: .wait(_timeout=5)
+
+To address the timestamp issue in location.py, we will also need to change the format that the struct will pack in the send_parrot_telemetry() method under class FlightListener() from
+
+fmt = "if"		to	    fmt = "id"
+
+Due to certain issues with the default parameters for the Olympe event change methods, it can cause the script to do nothing as the commands from location.py get ignored by olympe-keyboard.py , despite being received. To fix this, you need to edit the policy parameter when calling these methods. 
+
+Under class FlightListener(olympe.Event.Listener), in all but the first @olympe.listen.event() call, there will be an event changed method, which you will have to add _policy="wait" into the brackets of the method calls like shown: FlyingStateChanged(_policy="wait")
+
+Do the same for the methods:
+AlertStateChanged()
+NavigateHomeStateChanged()
+PositionChanged()
+SpeedChanged()
+AltitudeChanged()
+AttitudeChanged()
