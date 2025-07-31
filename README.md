@@ -1,6 +1,16 @@
 [![Autonomous landing](https://imgur.com/hxVBKOE.png)](https://www.youtube.com/watch?v=BVqrRhzYGXg)
 https://www.youtube.com/watch?v=BVqrRhzYGXg
 
+Changes to files
+================
+Additional changes were made to in this fork to these following files: `config.py`, `file_to_sock.py`, `location.py` and `olympe-keyboard.py` along with an additional file `olympe-keyboard-ai.py`.
+`location.py` is changed to include additional functions `is_dwm_location_reasonable()`, `remove_unreasonable_anchors()` and `replace_unreasonable_anchors()` to identify and deal with erroneous UWB ranging data. 
+
+`olympe-keyboard.py` calls the generic `Drone` controller class in the main function, which can be used for standard ANAFI drones. 
+If using the ANAFI Ai, use `olympe-keyboard-ai.py` instead, which calls the more specific `AnafiAi` controller class
+
+Specifics regarding the changes to each file can be found in the `script-changes.txt` file in `replaced-files` folder.
+
 Autonomous landing
 ==================
 
@@ -426,3 +436,4 @@ LAND PID CONTROL X=  -1 Y=   0 YAW=   0, DP=(0.04 -0.00 0.42) YAW=(-0.0°)
 Once drone successfully lands (the whole mission is complete), `location.py` exits.
 
 You can repeat the mission by executing the script once again. If you want repeat a mission in a loop autonomously, specify the `--loop` parameter for the `location.py` script and call the `olympe-keyboard.py` script with the `--no-block-input-on-land` parameter.
+
